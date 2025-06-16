@@ -33,7 +33,7 @@ function UserMenu() {
     return (
       <>
         <Link
-          href="/"
+          href="/showcase"
           className="text-sm font-medium text-gray-700 hover:text-gray-900"
         >
           试用一下吧
@@ -50,12 +50,12 @@ function UserMenu() {
       <DropdownMenuTrigger>
         <Avatar className="cursor-pointer size-9">
           <AvatarImage alt={user.name || ''} />
-          <AvatarFallback>
+          {/* <AvatarFallback>
             {user.email
               .split(' ')
               .map((n) => n[0])
               .join('')}
-          </AvatarFallback>
+          </AvatarFallback> */}
         </Avatar>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="flex flex-col gap-1">

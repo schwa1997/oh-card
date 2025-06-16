@@ -8,7 +8,6 @@ import {
   ShieldCheck,
   HeartPulse,
   Brain,
-  Leaf,
   Star
 } from "lucide-react";
 import Image from "next/image";

@@ -1,90 +1,70 @@
 import { desc, and, eq, isNull } from 'drizzle-orm';
 import { db } from './drizzle';
-import { activityLogs, teamMembers, teams, users } from './schema';
+import { activityLogs, Client, clients, users,type User } from './schema';
 import { cookies } from 'next/headers';
 import { verifyToken } from '@/lib/auth/session';
 
-export async function getUser() {
+type ClientWithUser = {
+  user: Pick<User, 'id' | 'name' | 'email'>;
+  nickname: string | null;
+  contactInfo: string | null;
+  contactMethod: string | null;
+  clientId: number | null;
+};
+
+type ActivityLogWithUser = {
+  id: number;
+  action: string;
+  timestamp: Date;
+  ipAddress: string | null;
+  userName: string | null;
+};
+
+export async function getUser(): Promise<User | null> {
   const sessionCookie = (await cookies()).get('session');
-  if (!sessionCookie || !sessionCookie.value) {
+  if (!sessionCookie?.value) return null;
+
+  try {
+    const sessionData = await verifyToken(sessionCookie.value);
+    if (!sessionData?.user?.id || new Date(sessionData.expires) < new Date()) {
+      return null;
+    }
+
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(and(eq(users.id, sessionData.user.id), isNull(users.deletedAt)))
+      .limit(1);
+
+    return user ?? null;
+  } catch (error) {
+    console.error('Error verifying user session:', error);
     return null;
   }
-
-  const sessionData = await verifyToken(sessionCookie.value);
-  if (
-    !sessionData ||
-    !sessionData.user ||
-    typeof sessionData.user.id !== 'number'
-  ) {
-    return null;
-  }
-
-  if (new Date(sessionData.expires) < new Date()) {
-    return null;
-  }
-
-  const user = await db
-    .select()
-    .from(users)
-    .where(and(eq(users.id, sessionData.user.id), isNull(users.deletedAt)))
-    .limit(1);
-
-  if (user.length === 0) {
-    return null;
-  }
-
-  return user[0];
 }
 
-export async function getTeamByStripeCustomerId(customerId: string) {
-  const result = await db
-    .select()
-    .from(teams)
-    .where(eq(teams.stripeCustomerId, customerId))
-    .limit(1);
-
-  return result.length > 0 ? result[0] : null;
-}
-
-export async function updateTeamSubscription(
-  teamId: number,
-  subscriptionData: {
-    stripeSubscriptionId: string | null;
-    stripeProductId: string | null;
-    planName: string | null;
-    subscriptionStatus: string;
-  }
-) {
-  await db
-    .update(teams)
-    .set({
-      ...subscriptionData,
-      updatedAt: new Date()
-    })
-    .where(eq(teams.id, teamId));
-}
-
-export async function getUserWithTeam(userId: number) {
+export async function getUserWithClient(userId: number): Promise<ClientWithUser | null> {
   const result = await db
     .select({
       user: users,
-      teamId: teamMembers.teamId
+      nickname: clients.nickname,
+      contactInfo: clients.contactInfo,
+      contactMethod: clients.contactMethod,
+      clientId: clients.id
     })
     .from(users)
-    .leftJoin(teamMembers, eq(users.id, teamMembers.userId))
+    .leftJoin(clients, eq(users.id, clients.userId))
     .where(eq(users.id, userId))
     .limit(1);
 
-  return result[0];
+  return result[0] ?? null;
 }
 
-export async function getActivityLogs() {
+export async function getActivityLogs(): Promise<ActivityLogWithUser[]> {
   const user = await getUser();
-  if (!user) {
-    throw new Error('User not authenticated');
-  }
+  if (!user) throw new Error('Authentication required');
 
-  return await db
+  return db
     .select({
       id: activityLogs.id,
       action: activityLogs.action,
@@ -99,32 +79,38 @@ export async function getActivityLogs() {
     .limit(10);
 }
 
-export async function getTeamForUser() {
+export async function getClientsForUser(): Promise<ClientWithUser[]> {
   const user = await getUser();
-  if (!user) {
-    return null;
-  }
+  if (!user) throw new Error('Authentication required');
+  return db
+    .select({
+      user: users,
+      nickname: clients.nickname,
+      contactInfo: clients.contactInfo,
+      contactMethod: clients.contactMethod,
+      clientId: clients.id
+    })
+    .from(users)
+    .leftJoin(clients, eq(users.id, clients.userId))
+    .where(eq(clients.userId, user.id));
+}
 
-  const result = await db.query.teamMembers.findFirst({
-    where: eq(teamMembers.userId, user.id),
+// New utility functions for your OH card app:
+
+export async function getClientSessions(clientId: number) {
+  return db.query.sessions.findMany({
+    where: (sessions, { eq }) => eq(sessions.clientId, clientId),
+    orderBy: (sessions, { desc }) => [desc(sessions.date)],
     with: {
-      team: {
-        with: {
-          teamMembers: {
-            with: {
-              user: {
-                columns: {
-                  id: true,
-                  name: true,
-                  email: true
-                }
-              }
-            }
-          }
-        }
-      }
+      cards: true,
+      notes: true
     }
   });
+}
 
-  return result?.team || null;
+export async function getClientTags(clientId: number) {
+  return db.query.clientTags.findMany({
+    where: (tags, { eq }) => eq(tags.clientId, clientId),
+    orderBy: (tags, { asc }) => [asc(tags.name)]
+  });
 }

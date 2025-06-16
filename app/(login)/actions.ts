@@ -4,38 +4,37 @@ import { z } from 'zod';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
 import {
-  User,
   users,
-  teams,
-  teamMembers,
   activityLogs,
   type NewUser,
-  type NewTeam,
-  type NewTeamMember,
   type NewActivityLog,
   ActivityType,
-  invitations
+  clients,
+  NewClient,
+  clientTags,
+  sessions,
+  sessionCards,
 } from '@/lib/db/schema';
 import { comparePasswords, hashPassword, setSession } from '@/lib/auth/session';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
-import { getUser, getUserWithTeam } from '@/lib/db/queries';
+import { getUser, getUserWithClient } from '@/lib/db/queries';
 import {
   validatedAction,
   validatedActionWithUser
 } from '@/lib/auth/middleware';
 
 async function logActivity(
-  teamId: number | null | undefined,
+  clientId: number | null | undefined,
   userId: number,
   type: ActivityType,
   ipAddress?: string
 ) {
-  if (teamId === null || teamId === undefined) {
+  if (clientId === null || clientId === undefined) {
     return;
   }
   const newActivity: NewActivityLog = {
-    teamId,
+    clientId,
     userId,
     action: type,
     ipAddress: ipAddress || ''
@@ -51,43 +50,32 @@ const signInSchema = z.object({
 export const signIn = validatedAction(signInSchema, async (data, formData) => {
   const { email, password } = data;
 
-  const userWithTeam = await db
-    .select({
-      user: users,
-      team: teams
-    })
-    .from(users)
-    .leftJoin(teamMembers, eq(users.id, teamMembers.userId))
-    .leftJoin(teams, eq(teamMembers.teamId, teams.id))
-    .where(eq(users.email, email))
-    .limit(1);
+  const user = await getUser();
 
-  if (userWithTeam.length === 0) {
+  if (!user) {
     return {
-      error: 'Invalid email or password. Please try again.',
+      error: '无效的邮箱或密码，请重试',
       email,
       password
     };
   }
 
-  const { user: foundUser, team: foundTeam } = userWithTeam[0];
-
   const isPasswordValid = await comparePasswords(
     password,
-    foundUser.passwordHash
+    user.passwordHash
   );
 
   if (!isPasswordValid) {
     return {
-      error: 'Invalid email or password. Please try again.',
+      error: '无效的邮箱或密码，请重试',
       email,
       password
     };
   }
 
   await Promise.all([
-    setSession(foundUser),
-    logActivity(foundTeam?.id, foundUser.id, ActivityType.SIGN_IN)
+    setSession(user),
+    logActivity(null, user.id, ActivityType.SIGN_IN)
   ]);
   redirect('/dashboard');
 });
@@ -109,7 +97,7 @@ export const signUp = validatedAction(signUpSchema, async (data, formData) => {
 
   if (existingUser.length > 0) {
     return {
-      error: 'Failed to create user. Please try again.',
+      error: '创建用户失败，请重试',
       email,
       password
     };
@@ -120,104 +108,214 @@ export const signUp = validatedAction(signUpSchema, async (data, formData) => {
   const newUser: NewUser = {
     email,
     passwordHash,
-    role: 'owner' // Default role, will be overridden if there's an invitation
+    role: 'user' // Default role is user, admin needs to be set manually
   };
 
   const [createdUser] = await db.insert(users).values(newUser).returning();
 
   if (!createdUser) {
     return {
-      error: 'Failed to create user. Please try again.',
+      error: '创建用户失败，请重试',
       email,
       password
     };
   }
 
-  let teamId: number;
-  let userRole: string;
-  let createdTeam: typeof teams.$inferSelect | null = null;
-
-  if (inviteId) {
-    // Check if there's a valid invitation
-    const [invitation] = await db
-      .select()
-      .from(invitations)
-      .where(
-        and(
-          eq(invitations.id, parseInt(inviteId)),
-          eq(invitations.email, email),
-          eq(invitations.status, 'pending')
-        )
-      )
-      .limit(1);
-
-    if (invitation) {
-      teamId = invitation.teamId;
-      userRole = invitation.role;
-
-      await db
-        .update(invitations)
-        .set({ status: 'accepted' })
-        .where(eq(invitations.id, invitation.id));
-
-      await logActivity(teamId, createdUser.id, ActivityType.ACCEPT_INVITATION);
-
-      [createdTeam] = await db
-        .select()
-        .from(teams)
-        .where(eq(teams.id, teamId))
-        .limit(1);
-    } else {
-      return { error: 'Invalid or expired invitation.', email, password };
-    }
-  } else {
-    // Create a new team if there's no invitation
-    const newTeam: NewTeam = {
-      name: `${email}'s Team`
-    };
-
-    [createdTeam] = await db.insert(teams).values(newTeam).returning();
-
-    if (!createdTeam) {
-      return {
-        error: 'Failed to create team. Please try again.',
-        email,
-        password
-      };
-    }
-
-    teamId = createdTeam.id;
-    userRole = 'owner';
-
-    await logActivity(teamId, createdUser.id, ActivityType.CREATE_TEAM);
-  }
-
-  const newTeamMember: NewTeamMember = {
-    userId: createdUser.id,
-    teamId: teamId,
-    role: userRole
+  // Create a default client profile for the therapist
+  const newClient: NewClient = {
+    nickname: `${email.split('@')[0]}`,
+    contactInfo: '',
+    contactMethod: 'wechat',
+    userId: createdUser.id
   };
 
+  const [createdClient] = await db.insert(clients).values(newClient).returning();
+
+  if (!createdClient) {
+    return {
+      error: '创建客户档案失败',
+      email,
+      password
+    };
+  }
+
   await Promise.all([
-    db.insert(teamMembers).values(newTeamMember),
-    logActivity(teamId, createdUser.id, ActivityType.SIGN_UP),
+    logActivity(createdClient.id, createdUser.id, ActivityType.SIGN_UP),
     setSession(createdUser)
   ]);
-
-  const redirectTo = formData.get('redirect') as string | null;
-  if (redirectTo === 'checkout') {
-    const priceId = formData.get('priceId') as string;
-  }
 
   redirect('/dashboard');
 });
 
 export async function signOut() {
-  const user = (await getUser()) as User;
-  const userWithTeam = await getUserWithTeam(user.id);
-  await logActivity(userWithTeam?.teamId, user.id, ActivityType.SIGN_OUT);
+  const user = await getUser();
+  if (!user) return;
+  
+  await logActivity(null, user.id, ActivityType.SIGN_OUT);
   (await cookies()).delete('session');
+  redirect('/sign-in');
 }
+
+// Client Management Actions
+
+const createClientSchema = z.object({
+  nickname: z.string().min(1, '昵称不能为空').max(100),
+  contactInfo: z.string().min(1, '联系方式不能为空').max(255),
+  contactMethod: z.enum(['wechat', 'phone']),
+  tags: z.array(z.string()).optional()
+});
+
+
+
+export const createClient = validatedActionWithUser(
+  createClientSchema,
+  async (data, _, user) => {
+    const { nickname, contactInfo, contactMethod, tags = [] } = data;
+
+    const newClient: NewClient = {
+      nickname,
+      contactInfo,
+      contactMethod,
+      userId: user.id
+    };
+
+    const [createdClient] = await db.insert(clients).values(newClient).returning();
+
+    if (!createdClient) {
+      return {
+        error: '创建客户失败'
+      };
+    }
+
+    // Add tags if provided
+    if (tags.length > 0) {
+      await db.insert(clientTags).values(
+        tags.map(tag => ({
+          name: tag,
+          clientId: createdClient.id,
+          color: getColorForTag(tag)
+        }))
+      );
+    }
+
+    await logActivity(createdClient.id, user.id, ActivityType.ADD_CLIENT);
+
+    return {
+      success: '客户创建成功',
+      clientId: createdClient.id
+    };
+  }
+);
+
+// OH Card Session Actions
+const createSessionSchema = z.object({
+  clientId: z.number(),
+  title: z.string().min(1, '标题不能为空').max(100),
+  notes: z.string().optional()
+});
+
+export const createSession = validatedActionWithUser(
+  createSessionSchema,
+  async (data, _, user) => {
+    const { clientId, title, notes } = data;
+
+    const [session] = await db.insert(sessions).values({
+      clientId,
+      userId: user.id,
+      title,
+      notes,
+      date: new Date()
+    }).returning();
+
+    if (!session) {
+      return {
+        error: '创建会话失败'
+      };
+    }
+
+    await logActivity(clientId, user.id, ActivityType.ADD_SESSION);
+
+    return {
+      success: '会话创建成功',
+      sessionId: session.id
+    };
+  }
+);
+
+const saveCardArrangementSchema = z.object({
+  sessionId: z.number(),
+  cards: z.array(z.object({
+    cardId: z.number(),
+    positionX: z.number(),
+    positionY: z.number(),
+    rotation: z.number().optional(),
+    notes: z.string().optional()
+  }))
+});
+
+export const saveCardArrangement = validatedActionWithUser(
+  saveCardArrangementSchema,
+  async (data, _, user) => {
+    const { sessionId, cards } = data;
+
+    // First delete existing cards for this session
+    await db.delete(sessionCards).where(eq(sessionCards.sessionId, sessionId));
+
+    // Insert new card arrangement
+    await db.insert(sessionCards).values(
+      cards.map(card => ({
+        sessionId,
+        cardId: card.cardId,
+        positionX: card.positionX,
+        positionY: card.positionY,
+        rotation: card.rotation || 0,
+        notes: card.notes || ''
+      }))
+    );
+
+    const session = await db.query.sessions.findFirst({
+      where: eq(sessions.id, sessionId),
+      with: { client: true }
+    });
+
+    if (session?.client) {
+      await logActivity(session.client.id, user.id, ActivityType.UPDATE_SESSION);
+    }
+
+    return {
+      success: '卡牌排列保存成功'
+    };
+  }
+);
+
+// Utility function for tag colors
+function getColorForTag(tag: string): string {
+  const colors = ['blue', 'green', 'red', 'purple', 'orange'];
+  const hash = tag.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return colors[hash % colors.length];
+}
+
+
+const updateAccountSchema = z.object({
+  name: z.string().min(1, 'Name is required').max(100),
+  email: z.string().email('Invalid email address')
+});
+
+export const updateAccount = validatedActionWithUser(
+  updateAccountSchema,
+  async (data, _, user) => {
+    const { name, email } = data;
+  
+
+    await Promise.all([
+      db.update(users).set({ name, email }).where(eq(users.id, user.id)),
+      logActivity(null, user.id, ActivityType.UPDATE_ACCOUNT)
+    ]);
+
+    return { name, success: 'Account updated successfully.' };
+  }
+);
+
 
 const updatePasswordSchema = z.object({
   currentPassword: z.string().min(8).max(100),
@@ -263,14 +361,13 @@ export const updatePassword = validatedActionWithUser(
     }
 
     const newPasswordHash = await hashPassword(newPassword);
-    const userWithTeam = await getUserWithTeam(user.id);
 
     await Promise.all([
       db
         .update(users)
         .set({ passwordHash: newPasswordHash })
         .where(eq(users.id, user.id)),
-      logActivity(userWithTeam?.teamId, user.id, ActivityType.UPDATE_PASSWORD)
+      logActivity(null, user.id, ActivityType.UPDATE_PASSWORD)
     ]);
 
     return {
@@ -278,6 +375,8 @@ export const updatePassword = validatedActionWithUser(
     };
   }
 );
+
+
 
 const deleteAccountSchema = z.object({
   password: z.string().min(8).max(100)
@@ -296,10 +395,10 @@ export const deleteAccount = validatedActionWithUser(
       };
     }
 
-    const userWithTeam = await getUserWithTeam(user.id);
+    const userWithClient = await getUserWithClient(user.id);
 
     await logActivity(
-      userWithTeam?.teamId,
+      userWithClient?.clientId,
       user.id,
       ActivityType.DELETE_ACCOUNT
     );
@@ -313,138 +412,9 @@ export const deleteAccount = validatedActionWithUser(
       })
       .where(eq(users.id, user.id));
 
-    if (userWithTeam?.teamId) {
-      await db
-        .delete(teamMembers)
-        .where(
-          and(
-            eq(teamMembers.userId, user.id),
-            eq(teamMembers.teamId, userWithTeam.teamId)
-          )
-        );
-    }
+      
 
     (await cookies()).delete('session');
     redirect('/sign-in');
-  }
-);
-
-const updateAccountSchema = z.object({
-  name: z.string().min(1, 'Name is required').max(100),
-  email: z.string().email('Invalid email address')
-});
-
-export const updateAccount = validatedActionWithUser(
-  updateAccountSchema,
-  async (data, _, user) => {
-    const { name, email } = data;
-    const userWithTeam = await getUserWithTeam(user.id);
-
-    await Promise.all([
-      db.update(users).set({ name, email }).where(eq(users.id, user.id)),
-      logActivity(userWithTeam?.teamId, user.id, ActivityType.UPDATE_ACCOUNT)
-    ]);
-
-    return { name, success: 'Account updated successfully.' };
-  }
-);
-
-const removeTeamMemberSchema = z.object({
-  memberId: z.number()
-});
-
-export const removeTeamMember = validatedActionWithUser(
-  removeTeamMemberSchema,
-  async (data, _, user) => {
-    const { memberId } = data;
-    const userWithTeam = await getUserWithTeam(user.id);
-
-    if (!userWithTeam?.teamId) {
-      return { error: 'User is not part of a team' };
-    }
-
-    await db
-      .delete(teamMembers)
-      .where(
-        and(
-          eq(teamMembers.id, memberId),
-          eq(teamMembers.teamId, userWithTeam.teamId)
-        )
-      );
-
-    await logActivity(
-      userWithTeam.teamId,
-      user.id,
-      ActivityType.REMOVE_TEAM_MEMBER
-    );
-
-    return { success: 'Team member removed successfully' };
-  }
-);
-
-const inviteTeamMemberSchema = z.object({
-  email: z.string().email('Invalid email address'),
-  role: z.enum(['member', 'owner'])
-});
-
-export const inviteTeamMember = validatedActionWithUser(
-  inviteTeamMemberSchema,
-  async (data, _, user) => {
-    const { email, role } = data;
-    const userWithTeam = await getUserWithTeam(user.id);
-
-    if (!userWithTeam?.teamId) {
-      return { error: 'User is not part of a team' };
-    }
-
-    const existingMember = await db
-      .select()
-      .from(users)
-      .leftJoin(teamMembers, eq(users.id, teamMembers.userId))
-      .where(
-        and(eq(users.email, email), eq(teamMembers.teamId, userWithTeam.teamId))
-      )
-      .limit(1);
-
-    if (existingMember.length > 0) {
-      return { error: 'User is already a member of this team' };
-    }
-
-    // Check if there's an existing invitation
-    const existingInvitation = await db
-      .select()
-      .from(invitations)
-      .where(
-        and(
-          eq(invitations.email, email),
-          eq(invitations.teamId, userWithTeam.teamId),
-          eq(invitations.status, 'pending')
-        )
-      )
-      .limit(1);
-
-    if (existingInvitation.length > 0) {
-      return { error: 'An invitation has already been sent to this email' };
-    }
-
-    // Create a new invitation
-    await db.insert(invitations).values({
-      teamId: userWithTeam.teamId,
-      email,
-      role,
-      invitedBy: user.id,
-      status: 'pending'
-    });
-
-    await logActivity(
-      userWithTeam.teamId,
-      user.id,
-      ActivityType.INVITE_TEAM_MEMBER
-    );
-
-    // TODO: Send invitation email and include ?inviteId={id} to sign-up URL
-    // await sendInvitationEmail(email, userWithTeam.team.name, role)
-
-    return { success: 'Invitation sent successfully' };
   }
 );

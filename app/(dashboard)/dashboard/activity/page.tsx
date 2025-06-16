@@ -21,10 +21,17 @@ const iconMap: Record<ActivityType, LucideIcon> = {
   [ActivityType.UPDATE_PASSWORD]: Lock,
   [ActivityType.DELETE_ACCOUNT]: UserMinus,
   [ActivityType.UPDATE_ACCOUNT]: Settings,
-  [ActivityType.CREATE_TEAM]: UserPlus,
-  [ActivityType.REMOVE_TEAM_MEMBER]: UserMinus,
-  [ActivityType.INVITE_TEAM_MEMBER]: Mail,
-  [ActivityType.ACCEPT_INVITATION]: CheckCircle,
+  [ActivityType.ADD_CLIENT]: UserPlus,
+  [ActivityType.UPDATE_CLIENT]: UserMinus,
+  [ActivityType.DELETE_CLIENT]: Mail,
+  [ActivityType.ADD_SESSION]: CheckCircle,
+  [ActivityType.UPDATE_SESSION]: CheckCircle,
+  [ActivityType.DELETE_SESSION]: CheckCircle,
+  [ActivityType.ADD_CARD]: CheckCircle,
+  [ActivityType.UPDATE_CARD]: CheckCircle,
+  [ActivityType.DELETE_CARD]: CheckCircle,
+  [ActivityType.ADD_TEMPLATE]: CheckCircle,
+  [ActivityType.UPDATE_TEMPLATE]: CheckCircle,
 };
 
 function getRelativeTime(date: Date) {
@@ -55,14 +62,14 @@ function formatAction(action: ActivityType): string {
       return 'You deleted your account';
     case ActivityType.UPDATE_ACCOUNT:
       return 'You updated your account';
-    case ActivityType.CREATE_TEAM:
-      return 'You created a new team';
-    case ActivityType.REMOVE_TEAM_MEMBER:
-      return 'You removed a team member';
-    case ActivityType.INVITE_TEAM_MEMBER:
-      return 'You invited a team member';
-    case ActivityType.ACCEPT_INVITATION:
-      return 'You accepted an invitation';
+    case ActivityType.ADD_CLIENT:
+      return 'You added a new client';
+    case ActivityType.UPDATE_CLIENT:
+      return 'You updated a client';
+    case ActivityType.DELETE_CLIENT:
+      return 'You deleted a client';
+    case ActivityType.ADD_SESSION:
+      return 'You added a new session';
     default:
       return 'Unknown action occurred';
   }
